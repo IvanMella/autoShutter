@@ -1,7 +1,8 @@
 /* shutterAutomation                                                    */
 /*                                                                      */
-/* controls my dormroom shutter opening and a blower via webpage,       */
-/* an extra photoresistor automate open and close by the sunlight       */
+/* Controls my bedroom shutter by a servomotor using an ESP32           */
+/* wifi controller and light sensing. It also switch an optional 240ac  */
+/* fan via a SSR                                                        */
 /*                                                                      */
 /* Releases:                                                            */
 /*      -26/05/24 v0.1 early commit, only wifi command. servo need      */
@@ -10,10 +11,12 @@
 /* @ 2024 Ivan Mella. ivan.m48@gmail.com                                */
 
 #include <WiFi.h>
-#include <ESP32Servo.h>
+#include "mg995.h"
+/* The html file.                                                       */
+#include "html.h"
 
 /* create servo object to control a servo                               */
-Servo myservo;
+mg995 myservo;
 /* 16 servo objects can be created on the ESP32                         */
 
 /* variable to store the servo position                                 */
@@ -29,7 +32,7 @@ int pos = 0;
 /* 1-7,8(used by on-board LED),9-10,18-21                               */
 
 #if defined(CONFIG_IDF_TARGET_ESP32S2) || defined(CONFIG_IDF_TARGET_ESP32S3)
-int servoPin = 17;
+int servoPin = 18;
 #elif defined(CONFIG_IDF_TARGET_ESP32C3)
 int servoPin = 7;
 #else
@@ -48,11 +51,19 @@ String header;
 
 /* Decode HTTP GET value                                                */
 String valueString = String(5);
-int value = 0;
+int value = -1;                 // boot default
 int pos1 = 0;
 int pos2 = 0;
 
+// analog light variables 
+constexpr int pin_A0 = 36;
+// automa variables 
+long automaTimeout = 0;
+bool automaTrigger = 0;
 
+// fan variables
+constexpr int fanPin = 23;
+bool fanSwitch = 0;
 
 /* Current time                                                         */
 unsigned long currentTime = millis();
@@ -66,7 +77,7 @@ const long timeoutTime = 2000;
 /* Servo timeout                                                        */
 unsigned long servoTargetTime = 0;
 /* 50ms within every servo update                                       */
-const unsigned long servoTmeout = 50;
+const unsigned long servoTimeout = 30;
 
 void setup()
 {
@@ -90,19 +101,19 @@ void setup()
 
         /*                      **** SERVO *****                        */                                  
 	/* Allow allocation of all timers                               */
-	ESP32PWM::allocateTimer(0);
-	ESP32PWM::allocateTimer(1);
-	ESP32PWM::allocateTimer(2);
-	ESP32PWM::allocateTimer(3);
-
+	// ESP32PWM::allocateTimer(0);
+	// ESP32PWM::allocateTimer(1);
+	// ESP32PWM::allocateTimer(2);
+	// ESP32PWM::allocateTimer(3);
+        pinMode(fanPin, OUTPUT);
 	/* standard 50 hz servo                                         */
-	myservo.setPeriodHertz(50); 
+	// myservo.setPeriodHertz(50); 
 
-	/* attaches the servo on pin  18  to  the  servo  object  using */
+        /* attaches the servo on pin  18  to  the  servo  object  using */
         /* default min/max of 1000us and 2000us  different  servos  may */
         /* require different min/max settings for an accurate 0 to  180 */
         /* sweep                                                        */
-	myservo.attach(servoPin, 0, 20000);
+        myservo.attach(servoPin, 10);
         Serial.print("Attached: "); 
         Serial.println(servoPin); 
 }
@@ -110,7 +121,7 @@ void setup()
 void loop() 
 {
         /* Listen for incoming clients                                  */
-	WiFiClient client = server.available();
+	WiFiClient client = server.accept();
         
         /* If a new client connects,                                    */
 	if (client)
@@ -138,45 +149,18 @@ void loop()
 					/* if the current line is blank, you got two newline characters in a row.       */
 					/* that's the end of the client HTTP request, so send a response:               */
 					if (currentLine.length() == 0) {
-						/* HTTP headers always start with a response code (e.g. HTTP/1.1 200 OK)        */ 
-						/* and a content-type so the client knows what's coming, then a blank line:     */
-						client.println("HTTP/1.1 200 OK");
-						client.println("Content-type:text/html");
-						client.println("Connection: close");
-						client.println();
-
-						/* Display the HTML web page                            */
-						client.println("<!DOCTYPE html><html>");
-						client.println("<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-						client.println("<link rel=\"icon\" href=\"data:,\">");
-						/* CSS to style the on/off buttons                                                              */
-						/* Feel free to change the background-color and font-size attributes to fit your preferences    */
-						client.println("<style>body { text-align: center; font-family: \"Trebuchet MS\", Arial; margin-left:auto; margin-right:auto;}");
-						client.println(".slider { width: 300px; }</style>");
-						client.println("<script src=\"https://ajax.googleapis.com/ajax/libs/jquery/3.3.1/jquery.min.js\"></script>");
-										 
-						/* Web Page                                                                                     */
-						client.println("</head><body><h1>Tapparella Sesame</h1>");
-						client.println("<p>Position: <span id=\"servoPos\"></span></p>");          
-						client.println("<input type=\"range\" min=\"0\" max=\"180\" class=\"slider\" id=\"servoSlider\" onchange=\"servo(this.value)\" value=\""+valueString+"\"/>");
+                                                /* Send whole html text file */        
+						client.print(html);
 						
-						client.println("<script>var slider = document.getElementById(\"servoSlider\");");
-						client.println("var servoP = document.getElementById(\"servoPos\"); servoP.innerHTML = slider.value;");
-						client.println("slider.oninput = function() { slider.value = this.value; servoP.innerHTML = this.value; }");
-						client.println("$.ajaxSetup({timeout:1000}); function servo(pos) { ");
-						client.println("$.get(\"/?value=\" + pos + \"&\"); {Connection: close};}</script>");
-					 
-						client.println("</body></html>");     
-						
-						/* GET /?value=180& HTTP/1.1                                                            */
-						if(header.indexOf("GET /?value=")>=0) {
+						/* GET /?value=180& HTTP/1.1                                            */
+                                                if(header.indexOf("GET /?value=") >= 0) {
 							pos1 = header.indexOf('=');
 							pos2 = header.indexOf('&');
                                                         /* Set the servo value                                          */
 							valueString = header.substring(pos1+1, pos2);
-                                                        value = valueString.toInt();
-				
-							Serial.println(valueString); 
+                                                        Serial.println(valueString); 
+                                                        if(valueString.length() <= 3)
+                                                                value = valueString.toInt();
 						}         
 						/* The HTTP response ends with another blank line                       */
 						client.println();
@@ -193,6 +177,16 @@ void loop()
 				}
 			}
 		}
+
+                //triggers the fan frow webpage
+                if(valueString == "switch")
+                {
+                        fanSwitch = !fanSwitch;
+                        Serial.print("Fan :");
+                        Serial.println(fanSwitch);
+                        digitalWrite(fanPin, fanSwitch);
+                }
+
 		/* Clear the header variable    */
 		header = "";
 		/* Close the connection         */
@@ -200,23 +194,35 @@ void loop()
 		Serial.println("Client disconnected.");
 		Serial.println("");
 	}
-        /* Rotate servo slowly                                          */ 
-        while(pos != value && millis() > servoTargetTime)
-        {
-                if(pos < value)
-                {
-                        pos++;
-                }
-                else if (pos > value)
-                {
-                        pos--;        
-                }
+        
+        // updates servo position
+        myservo.write(value);
 
-                Serial.println(pos);
-                myservo.write(pos);
-                /* Delay 50ms                                           */
-                servoTargetTime = millis() + servoTimeout;
+
+        // automata every 1.5 sec. opens and turns on fan on dusk
+        if ((millis() - automaTimeout) >= 1500)
+        {
+                automaTimeout = millis();
+                //reads light emission
+                uint16_t BitsA0 = analogRead(pin_A0);
+                Serial.println(BitsA0);
+
+                if (!automaTrigger && BitsA0 > 1700)
+                {
+                        value = 0;
+                        automaTrigger = 1;
+                        digitalWrite(fanPin, 0);
+                }
+                else if (automaTrigger && BitsA0 < 1200)
+                {
+                        value = 90;
+                        automaTrigger = 0;
+                        digitalWrite(fanPin, 1);
+                }
+               
         }
+       
+
 }        
 
 

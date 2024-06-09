@@ -1,8 +1,7 @@
 # autoShutter
 ### Automatic control for my dormroom shutter
-Controls a shutter opening by a servomotor using an ESP32 microcontroller, wifi
-and a photoresistor. An optional control for a 240v plug is made to turn on and
-off a fan.
+Controls my bedroom shutter by a servomotor using an ESP32 microcontroller, wifi
+controller and light sensing. It also control an optional 240ac fan via a SSR
 
 developed in C++, html, javascript with atom.
 
